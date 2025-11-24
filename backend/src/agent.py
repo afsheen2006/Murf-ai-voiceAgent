@@ -1,150 +1,9 @@
 import logging
-
-from dotenv import load_dotenv
-from livekit.agents import (
-    Agent,
-    AgentSession,
-    JobContext,
-    JobProcess,
-    MetricsCollectedEvent,
-    RoomInputOptions,
-    WorkerOptions,
-    cli,
-    metrics,
-    tokenize,
-    # function_tool,
-    # RunContext
-)
-from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
-from livekit.plugins.turn_detector.multilingual import MultilingualModel
-
-logger = logging.getLogger("agent")
-
-load_dotenv(".env.local")
-
-
-class Assistant(Agent):
-    def __init__(self) -> None:
-        super().__init__(
-            instructions="""You are a helpful voice AI assistant. The user is interacting with you via voice, even if you perceive the conversation as text.
-            You eagerly assist users with their questions by providing information from your extensive knowledge.
-            Your responses are concise, to the point, and without any complex formatting or punctuation including emojis, asterisks, or other symbols.
-            You are curious, friendly, and have a sense of humor.""",
-        )
-
-    # To add tools, use the @function_tool decorator.
-    # Here's an example that adds a simple weather tool.
-    # You also have to add `from livekit.agents import function_tool, RunContext` to the top of this file
-    # @function_tool
-    # async def lookup_weather(self, context: RunContext, location: str):
-    #     """Use this tool to look up current weather information in the given location.
-    #
-    #     If the location is not supported by the weather service, the tool will indicate this. You must tell the user the location's weather is unavailable.
-    #
-    #     Args:
-    #         location: The location to look up weather information for (e.g. city name)
-    #     """
-    #
-    #     logger.info(f"Looking up weather for {location}")
-    #
-    #     return "sunny with a temperature of 70 degrees."
-
-
-def prewarm(proc: JobProcess):
-    proc.userdata["vad"] = silero.VAD.load()
-
-
-async def entrypoint(ctx: JobContext):
-    # Logging setup
-    # Add any other context you want in all log entries here
-    ctx.log_context_fields = {
-        "room": ctx.room.name,
-    }
-
-    # Set up a voice AI pipeline using OpenAI, Cartesia, AssemblyAI, and the LiveKit turn detector
-    session = AgentSession(
-        # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
-        # See all available models at https://docs.livekit.io/agents/models/stt/
-        stt=deepgram.STT(model="nova-3"),
-        # A Large Language Model (LLM) is your agent's brain, processing user input and generating a response
-        # See all available models at https://docs.livekit.io/agents/models/llm/
-        llm=google.LLM(
-                model="gemini-2.5-flash",
-            ),
-        # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
-        # See all available models as well as voice selections at https://docs.livekit.io/agents/models/tts/
-        tts=murf.TTS(
-                voice="en-US-matthew", 
-                style="Conversation",
-                tokenizer=tokenize.basic.SentenceTokenizer(min_sentence_len=2),
-                text_pacing=True
-            ),
-        # VAD and turn detection are used to determine when the user is speaking and when the agent should respond
-        # See more at https://docs.livekit.io/agents/build/turns
-        turn_detection=MultilingualModel(),
-        vad=ctx.proc.userdata["vad"],
-        # allow the LLM to generate a response while waiting for the end of turn
-        # See more at https://docs.livekit.io/agents/build/audio/#preemptive-generation
-        preemptive_generation=True,
-    )
-
-    # To use a realtime model instead of a voice pipeline, use the following session setup instead.
-    # (Note: This is for the OpenAI Realtime API. For other providers, see https://docs.livekit.io/agents/models/realtime/))
-    # 1. Install livekit-agents[openai]
-    # 2. Set OPENAI_API_KEY in .env.local
-    # 3. Add `from livekit.plugins import openai` to the top of this file
-    # 4. Use the following session setup instead of the version above
-    # session = AgentSession(
-    #     llm=openai.realtime.RealtimeModel(voice="marin")
-    # )
-
-    # Metrics collection, to measure pipeline performance
-    # For more information, see https://docs.livekit.io/agents/build/metrics/
-    usage_collector = metrics.UsageCollector()
-
-    @session.on("metrics_collected")
-    def _on_metrics_collected(ev: MetricsCollectedEvent):
-        metrics.log_metrics(ev.metrics)
-        usage_collector.collect(ev.metrics)
-
-    async def log_usage():
-        summary = usage_collector.get_summary()
-        logger.info(f"Usage: {summary}")
-
-    ctx.add_shutdown_callback(log_usage)
-
-    # # Add a virtual avatar to the session, if desired
-    # # For other providers, see https://docs.livekit.io/agents/models/avatar/
-    # avatar = hedra.AvatarSession(
-    #   avatar_id="...",  # See https://docs.livekit.io/agents/models/avatar/plugins/hedra
-    # )
-    # # Start the avatar and wait for it to join
-    # await avatar.start(session, room=ctx.room)
-
-    # Start the session, which initializes the voice pipeline and warms up the models
-    await session.start(
-        agent=Assistant(),
-        room=ctx.room,
-        room_input_options=RoomInputOptions(
-            # For telephony applications, use `BVCTelephony` for best results
-            noise_cancellation=noise_cancellation.BVC(),
-        ),
-    )
-
-    # Join the room and connect to the user
-    await ctx.connect()
-
-
-if __name__ == "__main__":
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, prewarm_fnc=prewarm))
-
-import logging
 import json
 import os
-import asyncio
 from datetime import datetime
-from typing import Annotated, Literal
-from dataclasses import dataclass, field
+from typing import Annotated
+from dataclasses import dataclass, field, asdict
 
 from dotenv import load_dotenv
 from pydantic import Field
@@ -162,200 +21,199 @@ from livekit.agents import (
     function_tool,
 )
 
-from livekit.plugins import murf, google, deepgram, silero, noise_cancellation
+from livekit.plugins import murf, silero, google, deepgram, noise_cancellation
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 logger = logging.getLogger("agent")
 load_dotenv(".env.local")
 
 # ======================================================
-# 🛒 ORDER MANAGEMENT SYSTEM
+# 🧠 STATE MODELS
 # ======================================================
 
 @dataclass
-class OrderState:
-    """Coffee shop order state."""
-    drinkType: str | None = None
-    size: str | None = None
-    milk: str | None = None
-    extras: list[str] = field(default_factory=list)
-    name: str | None = None
+class CheckInState:
+    mood: str | None = None
+    energy: str | None = None
+    objectives: list[str] = field(default_factory=list)
+    advice_given: str | None = None
 
-    def is_complete(self) -> bool:
-        return all([
-            self.drinkType,
-            self.size,
-            self.milk,
-            self.extras is not None,
-            self.name
-        ])
+    def is_complete(self):
+        return (
+            self.mood is not None
+            and self.energy is not None
+            and len(self.objectives) > 0
+        )
 
-    def to_dict(self) -> dict:
-        return {
-            "drinkType": self.drinkType,
-            "size": self.size,
-            "milk": self.milk,
-            "extras": self.extras,
-            "name": self.name,
-        }
-
-    def summary(self) -> str:
-        extras_text = f" with {', '.join(self.extras)}" if self.extras else ""
-        if not self.is_complete():
-            return "Order in progress…"
-        return f"{self.size.title()} {self.drinkType.title()} with {self.milk.title()} milk{extras_text} for {self.name}"
+    def to_dict(self):
+        return asdict(self)
 
 @dataclass
 class Userdata:
-    order: OrderState
+    current_checkin: CheckInState
+    history_summary: str
     session_start: datetime = field(default_factory=datetime.now)
 
 # ======================================================
-# 🛠️ FUNCTION TOOLS FOR ORDER FILLING
+# 💾 JSON LOGGING SYSTEM
 # ======================================================
 
-@function_tool
-async def set_drink_type(
-    ctx: RunContext[Userdata],
-    drink: Annotated[
-        Literal["latte", "cappuccino", "americano", "espresso", "mocha", "coffee", "cold brew", "matcha"],
-        Field(description="Type of coffee drink."),
-    ],
-) -> str:
-    ctx.userdata.order.drinkType = drink
-    return f"Great! A {drink}—nice choice."
+LOG_FILE = "wellness_log.json"
 
-@function_tool
-async def set_size(
-    ctx: RunContext[Userdata],
-    size: Annotated[
-        Literal["small", "medium", "large", "extra large"],
-        Field(description="Drink size."),
-    ],
-) -> str:
-    ctx.userdata.order.size = size
-    return f"{size.title()} size, perfect."
+def get_log_path():
+    base = os.path.dirname(__file__)
+    backend = os.path.abspath(os.path.join(base, ".."))
+    return os.path.join(backend, LOG_FILE)
 
-@function_tool
-async def set_milk(
-    ctx: RunContext[Userdata],
-    milk: Annotated[
-        Literal["whole", "skim", "almond", "oat", "soy", "coconut", "none"],
-        Field(description="Milk selection."),
-    ],
-) -> str:
-    ctx.userdata.order.milk = milk
-    if milk == "none":
-        return "Alright—no milk."
-    return f"{milk.title()} milk it is."
+def load_history():
+    path = get_log_path()
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return []
 
-@function_tool
-async def set_extras(
-    ctx: RunContext[Userdata],
-    extras: Annotated[
-        list[Literal["sugar", "whipped cream", "caramel", "extra shot", "vanilla", "cinnamon", "honey"]] | None,
-        Field(description="Optional extras."),
-    ] = None,
-) -> str:
-    ctx.userdata.order.extras = extras if extras else []
-    if extras:
-        return f"Added {', '.join(extras)}."
-    return "No extras added."
+def save_checkin(entry: CheckInState):
+    path = get_log_path()
+    history = load_history()
 
-@function_tool
-async def set_name(
-    ctx: RunContext[Userdata],
-    name: Annotated[str, Field(description="Customer name.")],
-) -> str:
-    ctx.userdata.order.name = name.strip().title()
-    return f"Thanks, {ctx.userdata.order.name}."
+    record = {
+        "timestamp": datetime.now().isoformat(),
+        "mood": entry.mood,
+        "energy": entry.energy,
+        "objectives": entry.objectives,
+        "summary": entry.advice_given,
+    }
 
-# ======================================================
-# 💾 JSON EXPORT
-# ======================================================
-
-def get_orders_folder():
-    base_dir = os.path.dirname(__file__)     # /src
-    backend_dir = os.path.abspath(os.path.join(base_dir, ".."))
-    folder = os.path.join(backend_dir, "orders")
-    os.makedirs(folder, exist_ok=True)
-    return folder
-
-def save_order_to_json(order: OrderState) -> str:
-    folder = get_orders_folder()
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = os.path.join(folder, f"order_{timestamp}.json")
-
-    order_data = order.to_dict()
-    order_data["timestamp"] = datetime.now().isoformat()
+    history.append(record)
 
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(order_data, f, indent=4, ensure_ascii=False)
+        json.dump(history, f, indent=4)
 
-    return path
+    print(f"✔ Saved check-in → {path}")
+
+# ======================================================
+# 🛠️ FUNCTION TOOLS
+# ======================================================
 
 @function_tool
-async def complete_order(ctx: RunContext[Userdata]) -> str:
-    order = ctx.userdata.order
+async def record_mood_energy(
+    ctx: RunContext[Userdata],
+    mood: Annotated[str, Field(description="How the user feels today")],
+    energy: Annotated[str, Field(description="Energy level for today")],
+) -> str:
 
-    if not order.is_complete():
-        missing = []
-        if not order.drinkType: missing.append("drink type")
-        if not order.size: missing.append("size")
-        if not order.milk: missing.append("milk")
-        if order.extras is None: missing.append("extras")
-        if not order.name: missing.append("name")
-        return f"We still need: {', '.join(missing)}."
+    ctx.userdata.current_checkin.mood = mood
+    ctx.userdata.current_checkin.energy = energy
+    
+    return f"Got it — you're feeling {mood} with {energy} energy."
 
-    path = save_order_to_json(order)
-    summary = order.summary()
-    return f"Your order is complete: {summary}. I've saved it to {path}."
+@function_tool
+async def record_goals(
+    ctx: RunContext[Userdata],
+    goals: Annotated[list[str], Field(description="1–3 goals for today")],
+) -> str:
+
+    ctx.userdata.current_checkin.objectives = goals
+    return "Great, I’ve noted your goals for today."
+
+@function_tool
+async def finalize_checkin(
+    ctx: RunContext[Userdata],
+    summary: Annotated[str, Field(description="One-sentence supportive summary")],
+) -> str:
+
+    state = ctx.userdata.current_checkin
+    state.advice_given = summary
+
+    if not state.is_complete():
+        return "I still need your mood, energy, and at least one goal before we finish."
+
+    save_checkin(state)
+
+    recap = f"""
+Here’s your check-in summary for today:
+
+• Mood: {state.mood}
+• Energy: {state.energy}
+• Goals: {', '.join(state.objectives)}
+
+Remember: {summary}
+
+I've saved this in your wellness log. Wishing you a grounded, peaceful day.
+"""
+    return recap
 
 # ======================================================
-# 🤖 BARISTA AGENT
+# 🤖 AGENT BEHAVIOR
 # ======================================================
 
-class BaristaAgent(Agent):
-    def __init__(self):
+class WellnessAgent(Agent):
+    def __init__(self, history_context: str):
         super().__init__(
-            instructions="""
-            You are a friendly barista at a coffee shop.
-            Your job is to take the customer's order step-by-step:
-            1. Drink type  
-            2. Size  
-            3. Milk  
-            4. Extras  
-            5. Name  
+            instructions=f"""
+You are a calm, supportive **Daily Wellness Voice Companion**.
+Your role is to guide a short, grounding check-in.
 
-            Ask only ONE question at a time.  
-            Use the function tools whenever possible.  
-            Be warm, friendly, and concise.
-            """,
-            tools=[
-                set_drink_type,
-                set_size,
-                set_milk,
-                set_extras,
-                set_name,
-                complete_order,
-            ],
+🔹 ALWAYS follow this structure:
+1. Warm greeting.
+2. Mention **previous session** using this context:
+   "{history_context}"
+3. Ask:
+   - “How are you feeling today?”
+   - “What’s your energy level like?”
+4. When the user answers → call **record_mood_energy**.
+5. Next ask:
+   - “What are 1–3 things you’d like to get done today?”
+6. When the user answers → call **record_goals**.
+7. Offer simple, non-medical, practical advice.
+8. Then call **finalize_checkin** with a short encouraging summary.
+
+🔹 SAFETY:
+- NEVER diagnose health conditions.
+- NEVER give medical or clinical advice.
+- If user expresses crisis → reply gently:
+  “I may not be able to help enough. Please reach out to someone you trust or a professional immediately.”
+
+🔹 IMPORTANT:
+- ALWAYS use the tools to log user mood, energy, goals.
+- Keep responses short, warm, encouraging, and grounded.
+""",
+            tools=[record_mood_energy, record_goals, finalize_checkin],
         )
 
 # ======================================================
-# 🚀 SYSTEM INITIALIZATION
+# 🚀 SESSION ENTRYPOINT
 # ======================================================
 
 def prewarm(proc: JobProcess):
     proc.userdata["vad"] = silero.VAD.load()
 
 async def entrypoint(ctx: JobContext):
-    userdata = Userdata(order=OrderState())
+    history = load_history()
+
+    if len(history) > 0:
+        last = history[-1]
+        history_ctx = (
+            f"Last check-in on {last['timestamp']}: "
+            f"You felt {last['mood']} with {last['energy']} energy. "
+            f"Your goals were {', '.join(last['objectives'])}."
+        )
+    else:
+        history_ctx = "This is your first wellness check-in."
+
+    userdata = Userdata(
+        current_checkin=CheckInState(),
+        history_summary=history_ctx,
+    )
 
     session = AgentSession(
         stt=deepgram.STT(model="nova-3"),
         llm=google.LLM(model="gemini-2.5-flash"),
         tts=murf.TTS(
-            voice="en-US-matthew",
+            voice="en-US-matthew",   # ✔ Correct voice
             style="Conversation",
             text_pacing=True,
         ),
@@ -365,15 +223,17 @@ async def entrypoint(ctx: JobContext):
     )
 
     await session.start(
-        agent=BaristaAgent(),
+        agent=WellnessAgent(history_context=history_ctx),
         room=ctx.room,
-        room_input_options=RoomInputOptions(noise_cancellation=noise_cancellation.BVC()),
+        room_input_options=RoomInputOptions(
+            noise_cancellation=noise_cancellation.BVC()
+        ),
     )
 
     await ctx.connect()
 
 # ======================================================
-# ▶️ START WORKER
+# ▶️ RUN AGENT
 # ======================================================
 
 if __name__ == "__main__":
